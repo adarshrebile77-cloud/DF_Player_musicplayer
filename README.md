@@ -1,54 +1,121 @@
-DFPlayer Mini Music Player — Arduino Nano
+```cpp
+/*
+ * DFPlayer Mini - Arduino Nano
+ * Play/Pause : D2 (INT0)
+ * Next       : D3 (INT1)
+ * DFPlayer TX -> D10 | DFPlayer RX -> D11 (via 1kΩ resistor)
+ * Speaker    -> SPK_1 and SPK_2
+ * SD Card    -> FAT32, folder "01", files: 001.mp3 002.mp3 003.mp3 004.mp3
+ */
 
-HARDWARE
-- Arduino Nano x1
-- DFPlayer Mini x1
-- Push buttons x2
-- 1k ohm resistor x1
-- Speaker 4ohm or 8ohm x1
-- MicroSD card FAT32 x1
+#include <SoftwareSerial.h>
+#include <DFRobotDFPlayerMini.h>
 
-WIRING
-DFPlayer VCC  -> Arduino 5V
-DFPlayer GND  -> Arduino GND
-DFPlayer TX   -> Arduino D10
-DFPlayer RX   -> Arduino D11 (via 1k ohm resistor)
-DFPlayer SPK1 -> Speaker +
-DFPlayer SPK2 -> Speaker -
-Play button   -> D2 and GND
-Next button   -> D3 and GND
+#define PLAY_PIN     2
+#define NEXT_PIN     3
+#define DFPLAYER_RX  10
+#define DFPLAYER_TX  11
+#define TOTAL_TRACKS  4
+#define VOLUME       25
+#define DEBOUNCE_MS  300
+#define AUTOADVANCE_COOLDOWN 3000
 
-SD CARD SETUP
-1. Format as FAT32 (full format)
-2. Create folder named 01
-3. Copy songs one by one in CMD in order
+SoftwareSerial playerSerial(DFPLAYER_RX, DFPLAYER_TX);
+DFRobotDFPlayerMini player;
 
-CMD commands:
-format D: /FS:FAT32 /V:MUSIC
-md D:\01
-copy "song1.mp3" D:\01\001.mp3
-copy "song2.mp3" D:\01\002.mp3
-copy "song3.mp3" D:\01\003.mp3
-copy "song4.mp3" D:\01\004.mp3
+int  currentTrack    = 1;
+bool isPlaying       = false;
+unsigned long trackStartTime = 0;
 
-SD card structure:
-D:\
-└── 01\
-    ├── 001.mp3
-    ├── 002.mp3
-    ├── 003.mp3
-    └── 004.mp3
+volatile bool playPressed = false;
+volatile bool nextPressed = false;
+unsigned long lastPlayTime = 0;
+unsigned long lastNextTime = 0;
 
-CODE SETTINGS
-TOTAL_TRACKS         4     change if you add more songs
-VOLUME              25     range 0 to 30
-DEBOUNCE_MS        300     increase if buttons double trigger
-AUTOADVANCE_COOLDOWN 3000  ms before auto next kicks in
+void ISR_play() {
+  unsigned long now = millis();
+  if (now - lastPlayTime > DEBOUNCE_MS) {
+    playPressed  = true;
+    lastPlayTime = now;
+  }
+}
 
-TROUBLESHOOTING
-DFPlayer not found   -> check TX->D10, RX->D11 via 1k ohm, VCC=5V, SD inserted
-Songs in wrong order -> reformat SD and recopy one by one in CMD
-Buttons laggy        -> increase DEBOUNCE_MS to 350
-Audio crackling      -> add 100uF capacitor between DFPlayer VCC and GND
-No sound             -> check SPK1 and SPK2, speaker must be 4ohm or 8ohm not piezo
-Song plays twice     -> increase AUTOADVANCE_COOLDOWN to 4000
+void ISR_next() {
+  unsigned long now = millis();
+  if (now - lastNextTime > DEBOUNCE_MS) {
+    nextPressed  = true;
+    lastNextTime = now;
+  }
+}
+
+void playTrack(int track) {
+  player.play(track);
+  isPlaying      = true;
+  trackStartTime = millis();
+  Serial.print(F("Playing track "));
+  Serial.print(track);
+  Serial.print(F(" / "));
+  Serial.println(TOTAL_TRACKS);
+}
+
+void handlePlayPause() {
+  if (!isPlaying) {
+    playTrack(currentTrack);
+  } else {
+    player.pause();
+    isPlaying = false;
+    Serial.println(F("Paused"));
+  }
+}
+
+void handleNext() {
+  currentTrack++;
+  if (currentTrack > TOTAL_TRACKS) currentTrack = 1;
+  playTrack(currentTrack);
+}
+
+void checkTrackFinished() {
+  if (!isPlaying) return;
+  if (millis() - trackStartTime < AUTOADVANCE_COOLDOWN) return;
+  if (playerSerial.available()) {
+    if (player.available()) {
+      if (player.readType() == DFPlayerPlayFinished) {
+        handleNext();
+      }
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  playerSerial.begin(9600);
+  pinMode(PLAY_PIN, INPUT_PULLUP);
+  pinMode(NEXT_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PLAY_PIN), ISR_play, FALLING);
+  attachInterrupt(digitalPinToInterrupt(NEXT_PIN), ISR_next, FALLING);
+  Serial.println(F("Initializing DFPlayer..."));
+  if (!player.begin(playerSerial)) {
+    Serial.println(F("ERROR: DFPlayer not found!"));
+    while (true);
+  }
+  delay(1000);
+  player.volume(VOLUME);
+  player.EQ(DFPLAYER_EQ_NORMAL);
+  player.stop();
+  currentTrack = 1;
+  isPlaying    = false;
+  Serial.println(F("Ready! D2=Play/Pause  D3=Next"));
+}
+
+void loop() {
+  if (playPressed) {
+    playPressed = false;
+    handlePlayPause();
+  }
+  if (nextPressed) {
+    nextPressed = false;
+    handleNext();
+  }
+  checkTrackFinished();
+}
+```
